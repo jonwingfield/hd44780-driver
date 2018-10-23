@@ -209,7 +209,7 @@ where
     }
 
     /// Set if the characters on the display should be visible
-    pub fn set_display(&mut self,  display: Display) {
+    pub fn set_display(&mut self, display: Display) {
         self.display_mode.display = display;
 
         let cmd = self.display_mode.as_byte();
@@ -313,6 +313,20 @@ where
 
         // Wait for the command to be processed
         self.delay.delay_us(100);
+    }
+
+    pub fn create_char(&mut self, location: u8, charmap: [u8; 8]) {
+        const CMD_SETCGRAMADDR: u8 = 0x40;
+
+        if location >= 8 {
+            panic!("Invalid location {}. Valid positions are 0-7.", location);
+        }
+
+        self.write_command(CMD_SETCGRAMADDR | location << 3);
+
+        for row in charmap.iter() {
+            self.write_char(*row as char);
+        }
     }
 
     fn init_4bit(&mut self) {
