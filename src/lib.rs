@@ -1,10 +1,11 @@
 #![no_std]
 
 extern crate embedded_hal;
+#[macro_use(block)]
+extern crate nb;
 
-use embedded_hal::blocking::delay::DelayMs;
-use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::digital::OutputPin;
+use embedded_hal::timer::CountDown;
 
 pub mod bus;
 
@@ -18,9 +19,18 @@ pub mod display_mode;
 
 pub use display_mode::DisplayMode;
 
-pub struct HD44780<D: DelayUs<u16> + DelayMs<u8>, B: DataBus> {
+pub mod time;
+
+use time::U16Ext;
+pub use time::{Ms, Us};
+
+pub struct HD44780<C, T, B: DataBus>
+where
+    C: CountDown<Time = T>,
+    T: From<Us>,
+{
     bus: B,
-    delay: D,
+    timer: C,
     entry_mode: EntryMode,
     display_mode: DisplayMode,
 }
@@ -48,7 +58,8 @@ pub enum CursorBlink {
 }
 
 impl<
-        D: DelayUs<u16> + DelayMs<u8>,
+        C: CountDown<Time = T>,
+        T: From<Us>,
         RS: OutputPin,
         EN: OutputPin,
         D0: OutputPin,
@@ -59,7 +70,7 @@ impl<
         D5: OutputPin,
         D6: OutputPin,
         D7: OutputPin,
-    > HD44780<D, EightBitBus<RS, EN, D0, D1, D2, D3, D4, D5, D6, D7>>
+    > HD44780<C, T, EightBitBus<RS, EN, D0, D1, D2, D3, D4, D5, D6, D7>>
 {
     /// Create an instance of a `HD44780` from 8 data pins, a register select
     /// pin, an enable pin and a struct implementing the delay trait.
@@ -83,11 +94,14 @@ impl<
         d5: D5,
         d6: D6,
         d7: D7,
-        delay: D,
-    ) -> HD44780<D, EightBitBus<RS, EN, D0, D1, D2, D3, D4, D5, D6, D7>> {
+        timer: C,
+    ) -> HD44780<C, T, EightBitBus<RS, EN, D0, D1, D2, D3, D4, D5, D6, D7>>
+    where
+        C: CountDown,
+    {
         let mut hd = HD44780 {
             bus: EightBitBus::from_pins(rs, en, d0, d1, d2, d3, d4, d5, d6, d7),
-            delay,
+            timer,
             entry_mode: EntryMode::default(),
             display_mode: DisplayMode::default(),
         };
@@ -99,14 +113,15 @@ impl<
 }
 
 impl<
-        D: DelayUs<u16> + DelayMs<u8>,
+        C: CountDown<Time = T>,
+        T: From<Us>,
         RS: OutputPin,
         EN: OutputPin,
         D4: OutputPin,
         D5: OutputPin,
         D6: OutputPin,
         D7: OutputPin,
-    > HD44780<D, FourBitBus<RS, EN, D4, D5, D6, D7>>
+    > HD44780<C, T, FourBitBus<RS, EN, D4, D5, D6, D7>>
 {
     /// Create an instance of a `HD44780` from 4 data pins, a register select
     /// pin, an enable pin and a struct implementing the delay trait.
@@ -134,11 +149,11 @@ impl<
         d5: D5,
         d6: D6,
         d7: D7,
-        delay: D,
-    ) -> HD44780<D, FourBitBus<RS, EN, D4, D5, D6, D7>> {
+        timer: C,
+    ) -> HD44780<C, T, FourBitBus<RS, EN, D4, D5, D6, D7>> {
         let mut hd = HD44780 {
             bus: FourBitBus::from_pins(rs, en, d4, d5, d6, d7),
-            delay,
+            timer,
             entry_mode: EntryMode::default(),
             display_mode: DisplayMode::default(),
         };
@@ -149,9 +164,10 @@ impl<
     }
 }
 
-impl<D, B> HD44780<D, B>
+impl<C, T, B> HD44780<C, T, B>
 where
-    D: DelayUs<u16> + DelayMs<u8>,
+    C: CountDown<Time = T>,
+    T: From<Us>,
     B: DataBus,
 {
     /// Unshifts the display and sets the cursor position to 0
@@ -296,23 +312,28 @@ where
         }
     }
 
+    fn delay<R: Into<Us>>(&mut self, time: R) {
+        self.timer.start(time.into());
+        block!(self.timer.wait()).unwrap();
+    }
+
     /// Write a single character to the `HD44780`
     ///
     /// ```rust,ignore
     /// lcd.write_char('A');
     /// ```
     pub fn write_char(&mut self, data: char) {
-        self.bus.write(data as u8, true, &mut self.delay);
+        self.bus.write(data as u8, true, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
     }
 
     fn write_command(&mut self, cmd: u8) {
-        self.bus.write(cmd, false, &mut self.delay);
+        self.bus.write(cmd, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
     }
 
     pub fn create_char(&mut self, location: u8, charmap: [u8; 8]) {
@@ -331,90 +352,90 @@ where
 
     fn init_4bit(&mut self) {
         // Wait for the LCD to wakeup if it was off
-        self.delay.delay_ms(15u8);
+        self.delay(15.ms());
 
         // Initialize Lcd in 4-bit mode
-        self.bus.write(0x33, false, &mut self.delay);
+        self.bus.write(0x33, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_ms(5u8);
+        self.delay(5.ms());
 
         // Sets 4-bit operation and enables 5x7 mode for chars
-        self.bus.write(0x32, false, &mut self.delay);
+        self.bus.write(0x32, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
-        self.bus.write(0x28, false, &mut self.delay);
+        self.bus.write(0x28, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
         // Clear Display
-        self.bus.write(0x0E, false, &mut self.delay);
+        self.bus.write(0x0E, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
         // Move the cursor to beginning of first line
-        self.bus.write(0x01, false, &mut self.delay);
+        self.bus.write(0x01, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
         // Set entry mode
         self.bus
-            .write(self.entry_mode.as_byte(), false, &mut self.delay);
+            .write(self.entry_mode.as_byte(), false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
-        self.bus.write(0x80, false, &mut self.delay);
+        self.bus.write(0x80, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
     }
 
     // Follow the 8-bit setup procedure as specified in the HD44780 datasheet
     fn init_8bit(&mut self) {
         // Wait for the LCD to wakeup if it was off
-        self.delay.delay_ms(15u8);
+        self.delay(15.ms());
 
         // Initialize Lcd in 8-bit mode
-        self.bus.write(0b0011_0000, false, &mut self.delay);
+        self.bus.write(0b0011_0000, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_ms(5u8);
+        self.delay(5.ms());
 
         // Sets 8-bit operation and enables 5x7 mode for chars
-        self.bus.write(0b0011_1000, false, &mut self.delay);
+        self.bus.write(0b0011_1000, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
-        self.bus.write(0b0000_1110, false, &mut self.delay);
+        self.bus.write(0b0000_1110, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
         // Clear Display
-        self.bus.write(0b0000_0001, false, &mut self.delay);
+        self.bus.write(0b0000_0001, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
         // Move the cursor to beginning of first line
-        self.bus.write(0b000_0111, false, &mut self.delay);
+        self.bus.write(0b000_0111, false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
 
         // Set entry mode
         self.bus
-            .write(self.entry_mode.as_byte(), false, &mut self.delay);
+            .write(self.entry_mode.as_byte(), false, &mut self.timer);
 
         // Wait for the command to be processed
-        self.delay.delay_us(100);
+        self.delay(100.us());
     }
 
     // Send a byte to the HD44780 by setting the data on the bus and

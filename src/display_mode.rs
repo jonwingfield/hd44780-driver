@@ -1,5 +1,5 @@
-use Cursor; 
-use CursorBlink; 
+use Cursor;
+use CursorBlink;
 use Display;
 
 pub struct DisplayMode {

@@ -1,7 +1,8 @@
-use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 use embedded_hal::digital::OutputPin;
+use embedded_hal::timer::CountDown;
 
 use bus::DataBus;
+use time::{U16Ext, Us};
 
 pub struct FourBitBus<
     RS: OutputPin,
@@ -106,7 +107,7 @@ impl<RS: OutputPin, EN: OutputPin, D4: OutputPin, D5: OutputPin, D6: OutputPin, 
 impl<RS: OutputPin, EN: OutputPin, D4: OutputPin, D5: OutputPin, D6: OutputPin, D7: OutputPin>
     DataBus for FourBitBus<RS, EN, D4, D5, D6, D7>
 {
-    fn write<D: DelayUs<u16> + DelayMs<u8>>(&mut self, byte: u8, data: bool, delay: &mut D) {
+    fn write<C: CountDown<Time = T>, T: From<Us>>(&mut self, byte: u8, data: bool, timer: &mut C) {
         if data {
             self.rs.set_high();
         } else {
@@ -117,14 +118,16 @@ impl<RS: OutputPin, EN: OutputPin, D4: OutputPin, D5: OutputPin, D6: OutputPin, 
 
         // Pulse the enable pin to recieve the upper nibble
         self.en.set_high();
-        delay.delay_ms(2u8);
+        timer.start(2000.us());
+        block!(timer.wait()).unwrap();
         self.en.set_low();
 
         self.write_lower_nibble(byte);
 
         // Pulse the enable pin to recieve the lower nibble
         self.en.set_high();
-        delay.delay_ms(2u8);
+        timer.start(2000.us());
+        block!(timer.wait()).unwrap();
         self.en.set_low();
 
         if data {
